@@ -118,7 +118,33 @@ st.dataframe(
 st.caption(f"Status thresholds (indicative): Recovered RI >= {RECOVERED}, Recovering {RECOVERING}-{RECOVERED}, "
            f"Not recovering < {RECOVERING}.")
 
+# ---------------- Year selection (chart click -> map) ----------------
+YEARS_DIR = DATA / "years"
+years_meta = json.loads((YEARS_DIR / "years.json").read_text()) if (YEARS_DIR / "years.json").exists() else None
+year_list = sorted(int(y) for y in years_meta["years"]) if years_meta else []
+LAYER_S2 = "Sentinel-2 NDVI 2026 (10 m)"
+LAYER_TREND = "NDVI trend 1990-2026 (Landsat 30 m)"
+LAYER_YEAR = "By year, relative to steppe (Landsat 30 m)"
+if year_list and "map_year" not in st.session_state:
+    st.session_state["map_year"] = year_list[-1]
+
+
+def take_click(event, key):
+    """Apply a click on a chart point once: switch the map to that year."""
+    pts = getattr(getattr(event, "selection", None), "points", None) or []
+    sig = tuple(sorted({int(round(p["x"])) for p in pts if "x" in p}))
+    if sig and st.session_state.get(f"_last_{key}") != sig and year_list:
+        y = min(year_list, key=lambda v: abs(v - sig[0]))
+        st.session_state["map_year"] = y
+        st.session_state["layer"] = LAYER_YEAR
+    st.session_state[f"_last_{key}"] = sig
+
+
+sel_year = st.session_state.get("map_year") if st.session_state.get("layer") == LAYER_YEAR else None
+
 # ---------------- Charts ----------------
+if year_list:
+    st.caption("Tip: click a point on a chart to see that year on the map below.")
 palette = ["#2563eb", "#dc2626", "#f59e0b", "#16a34a", "#7c3aed", "#0891b2", "#be185d"]
 left, right = st.columns(2)
 
@@ -132,7 +158,10 @@ with left:
                              line=dict(color="#6b7280", width=2.5, dash="dash"), marker=dict(size=4)))
     fig.update_layout(height=420, yaxis_title="NDVI", xaxis_title="Year", margin=dict(l=10, r=10, t=10, b=10),
                       legend=dict(orientation="h", y=-0.2))
-    st.plotly_chart(fig, width="stretch")
+    if sel_year:
+        fig.add_vline(x=sel_year, line_width=1, line_dash="dot", line_color="#333333")
+    ev1 = st.plotly_chart(fig, width="stretch", on_select="rerun", selection_mode="points", key="ndvi_chart")
+    take_click(ev1, "ndvi_chart")
 
 with right:
     st.subheader("Recovery Index (3-year rolling mean)")
@@ -149,19 +178,32 @@ with right:
     fig2.update_layout(height=420, yaxis_title="RI (dump / steppe)", xaxis_title="Year",
                        yaxis_range=[0, 1.1], margin=dict(l=10, r=10, t=10, b=10),
                        legend=dict(orientation="h", y=-0.2))
-    st.plotly_chart(fig2, width="stretch")
+    if sel_year:
+        fig2.add_vline(x=sel_year, line_width=1, line_dash="dot", line_color="#333333")
+    ev2 = st.plotly_chart(fig2, width="stretch", on_select="rerun", selection_mode="points", key="ri_chart")
+    take_click(ev2, "ri_chart")
 
 # ---------------- Map ----------------
 st.subheader("Map")
 meta = json.loads((DATA / "rasters.json").read_text())
-layer = st.radio("Layer", ["Sentinel-2 NDVI 2026 (10 m)", "NDVI trend 1990-2026 (Landsat 30 m)"], horizontal=True)
+layer_opts = [LAYER_S2, LAYER_TREND] + ([LAYER_YEAR] if year_list else [])
+layer = st.radio("Layer", layer_opts, horizontal=True, key="layer")
+if layer == LAYER_YEAR:
+    year = st.select_slider("Year", options=year_list, key="map_year")
+    ym = years_meta["years"][str(year)]
 
 m = folium.Map(location=[53.0227, 63.1417], zoom_start=12, tiles=None, control_scale=True)
 folium.TileLayer(
     tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
     attr="Esri World Imagery", name="Satellite",
 ).add_to(m)
-if layer.startswith("Sentinel"):
+if layer == LAYER_YEAR:
+    folium.raster_layers.ImageOverlay(str(YEARS_DIR / f"ri_{year}.png"), bounds=years_meta["bounds"],
+                                      opacity=0.8, name=f"Relative NDVI {year}").add_to(m)
+    legend = (f"{year}: vegetation relative to natural steppe that summer (brown 0 = bare, teal 1 = like the steppe). "
+              f"Image coverage {ym['coverage_pct']}%"
+              + ("; gaps or stripes are missing Landsat data." if ym["coverage_pct"] < 95 or 2003 <= year <= 2012 else "."))
+elif layer == LAYER_S2:
     folium.raster_layers.ImageOverlay(str(DATA / "s2_ndvi_2026.png"), bounds=meta["s2"]["bounds"],
                                       opacity=0.75, name="NDVI 2026").add_to(m)
     legend = "NDVI 0 (bare, brown) to 0.6 (green vegetation, teal)"
@@ -188,7 +230,11 @@ if dumps_geo.exists():
         tooltip=folium.GeoJsonTooltip(fields=["label", "RI", "status"], aliases=["Object", "RI 2022-26", "Status"]),
     ).add_to(m)
 folium.LayerControl().add_to(m)
-components.html(m.get_root().render(), height=540)
+map_html = m.get_root().render()
+if hasattr(st, "iframe"):
+    st.iframe(map_html, height=540)
+else:  # older Streamlit
+    components.html(map_html, height=540)
 st.caption(legend)
 
 # ---------------- Method ----------------
