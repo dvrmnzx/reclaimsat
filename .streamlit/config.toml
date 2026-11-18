@@ -1,0 +1,7 @@
+# Palette from the NDVI colour ramp used on the maps (bare ground brown -> steppe teal)
+[theme]
+base = "light"
+primaryColor = "#01665E"
+backgroundColor = "#F7F9F8"
+secondaryBackgroundColor = "#E9EFED"
+textColor = "#12322E"
